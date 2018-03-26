@@ -9,6 +9,7 @@ public final class Action {
     public static final String ADD_CHILD_CATEGORY = "addChildCategory";
     public static final String REMOVE_DATA = "removeData";
     public static final String REMOVE_CATEGORY = "removeCategory";
+    public static final String REMOVE_CATEGORY_VALUE = "removeCategoryValue";
     public static final String ADD_CHILD_CATEGORY_VALUE = "addChildCategoryValue";
     public static final String ADD_SUM = "addSum";
     public static final String ADD_SUM_VALUE = "addSumValue";

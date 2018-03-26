@@ -3,18 +3,19 @@ package com.telegram.mybot;
 import com.telegram.mybot.model.Category;
 import com.telegram.mybot.model.RootCategory;
 import com.telegram.mybot.model.UserData;
+import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.StringUtils;
 import org.telegram.telegrambots.api.methods.ParseMode;
 import org.telegram.telegrambots.api.methods.send.SendMessage;
 import org.telegram.telegrambots.api.objects.CallbackQuery;
 import org.telegram.telegrambots.api.objects.Message;
 import org.telegram.telegrambots.api.objects.Update;
-import org.telegram.telegrambots.api.objects.User;
 import org.telegram.telegrambots.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.exceptions.TelegramApiException;
 
+import java.io.IOException;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -29,20 +30,21 @@ import static com.telegram.mybot.Action.ADD_SUM_VALUE;
 import static com.telegram.mybot.Action.MENU;
 import static com.telegram.mybot.Action.REMOVE_ALL;
 import static com.telegram.mybot.Action.REMOVE_CATEGORY;
+import static com.telegram.mybot.Action.REMOVE_CATEGORY_VALUE;
 import static com.telegram.mybot.Action.REMOVE_DATA;
 import static com.telegram.mybot.Action.START;
 import static com.telegram.mybot.Action.STATS;
 import static com.telegram.mybot.Constants.ASK_CHILD_CATEGORY;
 import static com.telegram.mybot.Constants.ASK_ENTER_SUM;
 import static com.telegram.mybot.Constants.ASK_ROOT_CATEGORY;
+import static com.telegram.mybot.Constants.INVALID_DATA_FORMAT_SUM;
 import static java.util.stream.Collectors.toList;
 
 public class CostBot extends TelegramLongPollingBot {
 
-    private static final String TOKEN = "527851491:AAF3YrRimC0B5flOuE2-ZL8jACzkY9I03ZY";
     private static final String BOT_NAME = "testbot";
-    Integer id = 0;
     private MongoDBServiceImpl mongoDBService;
+    private static final String FILE_NAME = "bot-token.txt";
 
     public void initDB() {
         mongoDBService = new MongoDBServiceImpl();
@@ -54,15 +56,19 @@ public class CostBot extends TelegramLongPollingBot {
         try {
             Message messageFromUpdate = getMessageFromUpdate(update);
             if (messageFromUpdate == null) {
-                userData = mongoDBService.getUserData(update.getCallbackQuery().getMessage().getChatId());
-                addMessageToHistory(update.getCallbackQuery().getData(), update.getCallbackQuery().getMessage().getChatId());
+                userData = mongoDBService.getUserData(update.getCallbackQuery().getMessage());
+                addMessageToHistory(update.getCallbackQuery().getData(), userData);
             } else {
-                userData = mongoDBService.getUserData(update.getMessage().getChatId());
-                addMessageToHistory(messageFromUpdate.getText(), messageFromUpdate.getChatId());
+                userData = mongoDBService.getUserData(update.getMessage());
+                addMessageToHistory(messageFromUpdate.getText(), userData);
             }
 
         } catch (NoSuchAlgorithmException e) {
             e.printStackTrace();
+        }
+        if (userData.getHistoryOfMessages().size() > 50) {
+            userData.setHistoryOMessages(userData.getHistoryOfMessages()
+                    .subList(userData.getHistoryOfMessages().size() - 5, userData.getHistoryOfMessages().size()));
         }
         if (update.hasMessage() && update.getMessage().hasText()) {
             String message_text = update.getMessage().getText();
@@ -81,12 +87,12 @@ public class CostBot extends TelegramLongPollingBot {
                     break;
                 default:
                     List<String> messages = userData.getHistoryOfMessages();
-                    if (ASK_ROOT_CATEGORY.equals(messages.get(messages.size() - 1))) {
+                    if (ASK_ROOT_CATEGORY.equals(messages.get(messages.size() - 2))) {
                         handleAddRootCategory(update, userData);
-                    } else if (ASK_CHILD_CATEGORY.equals(messages.get(messages.size() - 1))) {
+                    } else if (ASK_CHILD_CATEGORY.equals(messages.get(messages.size() - 2))) {
                         handleAddChildCategory(update, userData);
-                    } else if (ASK_ENTER_SUM.equals(messages.get(messages.size() - 1))) {
-                        handleAddSumCallBack(update);
+                    } else if (ASK_ENTER_SUM.equals(messages.get(messages.size() - 2)) || INVALID_DATA_FORMAT_SUM.equals(messages.get(messages.size() - 2))) {
+                        handleAddSumCallBack(update, userData);
                     }
                     break;
             }
@@ -104,11 +110,15 @@ public class CostBot extends TelegramLongPollingBot {
     }
 
     public String getBotToken() {
-        return TOKEN;
+        try {
+            return  FileUtils.readFileToString( FileUtils.toFile( getClass().getClassLoader().getResource( FILE_NAME ) ) );
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return "token";
     }
 
-    private void addMessageToHistory(String messageText, Long chatId) throws NoSuchAlgorithmException {
-        UserData userData = Optional.ofNullable(mongoDBService.getUserData(chatId)).orElse(new UserData(chatId));
+    private void addMessageToHistory(String messageText, UserData userData) throws NoSuchAlgorithmException {
         userData.getHistoryOfMessages().add(messageText);
         mongoDBService.updateHistory(userData);
     }
@@ -122,14 +132,14 @@ public class CostBot extends TelegramLongPollingBot {
                 .setChatId(userData.getUserId());
         String text = update.getMessage().getText();
         if (StringUtils.isNotBlank(text)) {
-            List<String> categories = Arrays.asList(StringUtils.trim(text).split(","));
+            List<String> categories = Arrays.asList(text.split(","));
             List<RootCategory> data = userData.getCategories();
-            categories.forEach(category -> data.add(new RootCategory(category, null)));
+            categories.forEach(category -> data.add(new RootCategory(category.trim(), null)));
             userData.setCategories(data);
             try {
                 mongoDBService.putUserData(userData);
                 message.setText("Корневые категории добавлены.");
-                addMessageToHistory( message.getText(), userData.getUserId() );// Sending our message object to user
+                addMessageToHistory(message.getText(), userData);// Sending our message object to user
                 execute(message);
             } catch (Exception e) {
                 e.printStackTrace();
@@ -142,11 +152,11 @@ public class CostBot extends TelegramLongPollingBot {
                 .setChatId(userData.getUserId());
         String text = update.getMessage().getText();
         if (StringUtils.isNotBlank(text)) {
-            List<String> categories = Arrays.asList(StringUtils.trim(text).split(","));
-            String nameOfRootCategory = userData.getHistoryOfMessages().get(userData.getHistoryOfMessages().size() - 2).split("-")[1];
+            List<String> categories = Arrays.asList(text.split(","));
+            String nameOfRootCategory = userData.getHistoryOfMessages().get(userData.getHistoryOfMessages().size() - 3).split("-")[1];
             RootCategory rootCategory = userData.getCategories().stream().filter(rootCategory1 -> nameOfRootCategory.equals(rootCategory1.getName()))
                     .collect(toList()).get(0);
-            categories.forEach(category -> rootCategory.getCategories().add(new Category(category)));
+            categories.forEach(category -> rootCategory.getCategories().add(new Category(category.trim())));
             try {
                 mongoDBService.putUserData(userData);
                 message.setText("Category was added.");// Sending our message object to user
@@ -157,13 +167,13 @@ public class CostBot extends TelegramLongPollingBot {
         }
     }
 
-    private void sendAskToAddRootCategory(Long chatId) {
+    private void sendAskToAddRootCategory(UserData userData) {
         SendMessage message = new SendMessage() // Create a message object object
-                .setChatId(chatId)
+                .setChatId(userData.getUserId())
                 .setText(ASK_ROOT_CATEGORY);
         try {
             execute(message); // Sending our message object to user
-            addMessageToHistory(message.getText(), chatId);
+            addMessageToHistory(message.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -210,7 +220,7 @@ public class CostBot extends TelegramLongPollingBot {
         String callBackData = callbackQuery.getData();
         switch (callBackData.split("-")[0]) {
             case ADD_ROOT_CATEGORY:
-                sendAskToAddRootCategory(userData.getUserId());
+                sendAskToAddRootCategory(userData);
                 break;
             case ADD_CHILD_CATEGORY:
                 createRootCategoryButtons(userData);
@@ -219,15 +229,19 @@ public class CostBot extends TelegramLongPollingBot {
                 removeData(userData);
                 break;
             case REMOVE_CATEGORY:
+                createChildCategoryButtons(userData, true);
                 break;
             case ADD_SUM:
-                createChildCategoryButtons(userData);
+                createChildCategoryButtons(userData, false);
                 break;
             case ADD_SUM_VALUE:
-                sendAskAboutAddSum(userData.getUserId());
+                sendAskAboutAddSum(userData);
                 break;
             case ADD_CHILD_CATEGORY_VALUE:
-                sendAskAboutChildCategories(userData.getUserId());
+                sendAskAboutChildCategories(userData);
+                break;
+            case REMOVE_CATEGORY_VALUE:
+                removeCategory(userData, callBackData.split("-")[1]);
                 break;
             case STATS:
                 showStats(userData);
@@ -235,6 +249,23 @@ public class CostBot extends TelegramLongPollingBot {
             default:
 
                 break;
+        }
+    }
+
+    private void removeCategory(UserData userData, String categoryName) {
+        SendMessage message = new SendMessage() // Create a message object object
+                .setChatId(userData.getUserId());
+        try {
+            mongoDBService.removeCategory(userData, categoryName);
+            message.setText("Категория удалена");
+        } catch (NoSuchAlgorithmException e) {
+            message.setText("Error. Shit happens");
+        }
+
+        try {
+            execute(message);
+        } catch (TelegramApiException e) {
+            e.printStackTrace();
         }
     }
 
@@ -255,11 +286,13 @@ public class CostBot extends TelegramLongPollingBot {
         try {
             message.setText("Данные обновлены");
             execute(message);
-            addMessageToHistory(message.getText(), userData.getUserId());
+            addMessageToHistory(message.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
-        showStats(userData);
+        if (!userData.getCategories().isEmpty()) {
+            showStats(userData);
+        }
     }
 
     public void removeAllCategories(UserData userData) {
@@ -276,7 +309,7 @@ public class CostBot extends TelegramLongPollingBot {
         }
         try {
             execute(message);
-            addMessageToHistory(message.getText(), userData.getUserId());
+            addMessageToHistory(message.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
@@ -290,47 +323,72 @@ public class CostBot extends TelegramLongPollingBot {
         } else {
             StringBuilder statsMessageBuilder = new StringBuilder();
             userData.getCategories().forEach(rootCategory -> {
-                statsMessageBuilder.append(rootCategory.getName());
-                statsMessageBuilder.append(":\n ");
-                rootCategory.getCategories().forEach(childCategory -> {
-                    statsMessageBuilder.append(childCategory.getName());
-                    statsMessageBuilder.append(": ");
-                    statsMessageBuilder.append(childCategory.getValue() == null ? 0 : childCategory.getValue());
-                    statsMessageBuilder.append(" <i>BYR</i>\n");
-                });
+                if (!rootCategory.getCategories().isEmpty()) {
+                    statsMessageBuilder.append("<i>" + rootCategory.getName() + "</i>");
+                    statsMessageBuilder.append(":\n");
+                    rootCategory.getCategories().forEach(childCategory -> {
+                        statsMessageBuilder.append("    ");
+                        statsMessageBuilder.append(childCategory.getName());
+                        statsMessageBuilder.append(": ");
+                        statsMessageBuilder.append(childCategory.getValue() == null ? 0 : childCategory.getValue());
+                        statsMessageBuilder.append(" <i>BYR</i>\n");
+                    });
+                }
             });
             message.setText(statsMessageBuilder.toString());
         }
         message.setParseMode(ParseMode.HTML);
         try {
             execute(message);
-            addMessageToHistory(message.getText(), userData.getUserId());
+            addMessageToHistory(message.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private void handleAddSumCallBack(Update update) {
+    private void handleAddSumCallBack(Update update, UserData userData) {
         long chat_id = update.getMessage().getChatId();
         SendMessage message = new SendMessage() // Create a message object object
                 .setChatId(chat_id);
         String text = update.getMessage().getText();
         if (StringUtils.isNotBlank(text)) {
-            UserData userData = mongoDBService.getUserData(chat_id);
-            String nameOfCategory = userData.getHistoryOfMessages().get(userData.getHistoryOfMessages().size() - 3).split("-")[1];
+            String[] t = userData.getHistoryOfMessages().get(userData.getHistoryOfMessages().size() - 3).split("-");
+            String nameOfCategory = t.length == 2 ? t[1] : t[0];
             userData.getCategories().forEach(
                     rootCategory1 -> {
                         List<Category> categoryList = rootCategory1.getCategories().stream().filter(
                                 childCategory -> nameOfCategory.equals(childCategory.getName())).collect(toList());
-                        if ( !categoryList.isEmpty() ) {
+                        if (!categoryList.isEmpty()) {
                             if (categoryList.get(0).getValue() == null) {
-                                categoryList.get(0).setValue(text);
+                                try {
+                                    Double d = Double.parseDouble(text.replaceAll(",", "."));
+                                    categoryList.get(0).setValue(String.valueOf(d));
+                                    message.setText("Данные обновлены\n" + nameOfCategory + ": " + categoryList.get(0).getValue() + " <i>BYR</i>");
+                                } catch (Exception ex) {
+                                    message.setText(INVALID_DATA_FORMAT_SUM);
+                                    try {
+                                        addMessageToHistory(nameOfCategory, userData);
+                                        addMessageToHistory(message.getText(), userData);
+                                    } catch (NoSuchAlgorithmException e) {
+                                        e.printStackTrace();
+                                    }
+                                }
                             } else {
-                                Double d = Double.parseDouble(categoryList.get(0).getValue().replaceAll(",", "."));
-                                categoryList.get(0).setValue(String.valueOf(d + Double.parseDouble(text.replaceAll(",", "."))));
-                                return;
+                                Double d = Double.parseDouble(categoryList.get(0).getValue());
+                                try {
+                                    categoryList.get(0).setValue(String.valueOf(d + Double.parseDouble(text.replaceAll(",", "."))));
+                                    message.setText("Данные обновлены\n" + nameOfCategory + ": " + categoryList.get(0).getValue() + " <i>BYR</i>");
+                                } catch (NumberFormatException ex1) {
+                                    message.setText(INVALID_DATA_FORMAT_SUM);
+                                    try {
+                                        addMessageToHistory(nameOfCategory, userData);
+                                        addMessageToHistory(message.getText(), userData);
+                                    } catch (NoSuchAlgorithmException e) {
+                                        e.printStackTrace();
+                                    }
+                                }
                             }
-                            message.setText("Данные обновлены\n" + nameOfCategory + ": " + categoryList.get(0).getValue() + " <i>BYR</i>");
+
                         }
                     });
             try {
@@ -364,80 +422,99 @@ public class CostBot extends TelegramLongPollingBot {
         return markupInline;
     }
 
-    private void createChildCategoryButtons(UserData userData) {
-        InlineKeyboardMarkup markupInline = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+    private void createChildCategoryButtons(UserData userData, boolean isRemoveOperation) {
+        SendMessage sendMessage = new SendMessage().setChatId(userData.getUserId());
+        if (!userData.getCategories().isEmpty()) {
+            InlineKeyboardMarkup markupInline = new InlineKeyboardMarkup();
+            List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+            final String prefix = isRemoveOperation ? "removeCategoryValue-" : "addSumValue-";
 
-        userData.getCategories().forEach(category -> {
-            category.getCategories().forEach(childCategory -> {
-                List<InlineKeyboardButton> rowInline = new ArrayList<>();
-                rowInline.add(new InlineKeyboardButton().setText(childCategory.getName()).setCallbackData("addSumValue-" + childCategory.getName()));
-                rows.add(rowInline);
+            userData.getCategories().forEach(category -> {
+                int size = category.getCategories().isEmpty() ? 1 : category.getCategories().size();
+                for (int i = 0; i < size; i++) {
+                    List<InlineKeyboardButton> rowInline = new ArrayList<>();
+                    List<InlineKeyboardButton> rowInline1 = new ArrayList<>();
+                    if (i == 0) {
+                        rowInline.add(new InlineKeyboardButton().setText(category.getName()).setCallbackData(isRemoveOperation ? prefix + category.getName() : "X"));
+                        rowInline.add(new InlineKeyboardButton().setText("X").setCallbackData("X"));
+                        if (!category.getCategories().isEmpty()) {
+                            rowInline1.add(new InlineKeyboardButton().setText("X").setCallbackData("X"));
+                            rowInline1.add(new InlineKeyboardButton().setText(
+                                    category.getCategories().get(i).getName()).setCallbackData(prefix + category.getCategories().get(i).getName()));
+                        }
+                    } else {
+                        rowInline.add(new InlineKeyboardButton().setText("X").setCallbackData("X"));
+                        rowInline.add(new InlineKeyboardButton().setText(
+                                category.getCategories().get(i).getName()).setCallbackData(prefix + category.getCategories().get(i).getName()));
+                    }
+                    rows.add(rowInline);
+                    if (i == 0 && !category.getCategories().isEmpty()) {
+                        rows.add(rowInline1);
+                    }
+                }
             });
-        });
-        // Add it to the message
-        markupInline.setKeyboard(rows);
+            // Add it to the message
+            markupInline.setKeyboard(rows);
 
-        SendMessage sendMessage = new SendMessage().setChatId(userData.getUserId())
-                .setText("Выберите категорию для заполнения:").setReplyMarkup(markupInline);
+
+            sendMessage.setText("Выберите категорию:").setReplyMarkup(markupInline);
+        } else {
+            sendMessage.setText("Нет данных для удаления. Создай root. It is not de way");
+        }
         try {
             execute(sendMessage);
-            addMessageToHistory(sendMessage.getText(), userData.getUserId());
+            addMessageToHistory(sendMessage.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
     private void createRootCategoryButtons(UserData userData) {
-        InlineKeyboardMarkup markupInline = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        SendMessage sendMessage = new SendMessage().setChatId(userData.getUserId());
+        if (!userData.getCategories().isEmpty()) {
+            InlineKeyboardMarkup markupInline = new InlineKeyboardMarkup();
+            List<List<InlineKeyboardButton>> rows = new ArrayList<>();
 
-        userData.getCategories().forEach(category -> {
-            List<InlineKeyboardButton> rowInline = new ArrayList<>();
-            rowInline.add(new InlineKeyboardButton().setText(category.getName()).setCallbackData("addChildCategoryValue-" + category.getName()));
-            rows.add(rowInline);
-        });
-        // Add it to the message
-        markupInline.setKeyboard(rows);
+            userData.getCategories().forEach(category -> {
+                List<InlineKeyboardButton> rowInline = new ArrayList<>();
+                rowInline.add(new InlineKeyboardButton().setText(category.getName()).setCallbackData("addChildCategoryValue-" + category.getName()));
+                rows.add(rowInline);
+            });
+            // Add it to the message
+            markupInline.setKeyboard(rows);
 
-        SendMessage sendMessage = new SendMessage().setChatId(userData.getUserId())
-                .setText("Выберите категорию:").setReplyMarkup(markupInline);
+            sendMessage.setText("Выберите категорию:").setReplyMarkup(markupInline);
+        } else {
+            sendMessage.setText("Нет данных для отображения. Создай root. It is not de way");
+        }
         try {
             execute(sendMessage);
-            addMessageToHistory(sendMessage.getText(), userData.getUserId());
+            addMessageToHistory(sendMessage.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
 
-    private void sendAskAboutChildCategories(Long chatId) {
-        SendMessage sendMessage = new SendMessage().setChatId(chatId)
+    private void sendAskAboutChildCategories(UserData userData) {
+        SendMessage sendMessage = new SendMessage().setChatId(userData.getUserId())
                 .setText(ASK_CHILD_CATEGORY);
         try {
             execute(sendMessage);
-            addMessageToHistory(sendMessage.getText(), chatId);
+            addMessageToHistory(sendMessage.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private void sendAskAboutAddSum(Long chatId) {
-        SendMessage sendMessage = new SendMessage().setChatId(chatId)
+    private void sendAskAboutAddSum(UserData userData) {
+        SendMessage sendMessage = new SendMessage().setChatId(userData.getUserId())
                 .setText(ASK_ENTER_SUM);
         try {
             execute(sendMessage);
-            addMessageToHistory(sendMessage.getText(), chatId);
+            addMessageToHistory(sendMessage.getText(), userData);
         } catch (Exception e) {
             e.printStackTrace();
         }
-    }
-
-    private UserData createBaseUser(Message message) {
-        UserData userData = new UserData(null);
-        Optional.ofNullable(message.getFrom()).map(User::getFirstName).ifPresent(userData::setUserFirstName);
-        Optional.ofNullable(message.getFrom()).map(User::getLastName).ifPresent(userData::setUserLastName);
-        Optional.ofNullable(message.getChatId()).ifPresent(userData::setUserId);
-        return userData;
     }
 }
